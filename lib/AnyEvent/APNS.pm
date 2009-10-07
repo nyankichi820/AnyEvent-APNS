@@ -11,7 +11,7 @@ require bytes;
 use Encode;
 use JSON::Any;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 has certificate => (
     is       => 'rw',
@@ -32,8 +32,10 @@ has sandbox => (
 );
 
 has handler => (
-    is  => 'rw',
-    isa => 'AnyEvent::Handle',
+    is      => 'rw',
+    isa     => 'AnyEvent::Handle',
+    predicate => 'connected',
+    clearer   => 'clear_handler',
 );
 
 has json_driver => (
@@ -82,14 +84,48 @@ sub send {
     $h->push_write( pack('n', bytes::length($token)) ); # token length
     $h->push_write( $token );                           # device token
 
+    # The maximum size allowed for a notification payload is 256 bytes;
+    # Apple Push Notification Service refuses any notification that exceeds this limit.
+    if ( (my $exceeded = bytes::length($json) - 256) > 0 ) {
+        if (ref $payload->{alert} eq 'HASH') {
+            $payload->{alert}{body} =
+                $self->_trim_utf8($payload->{alert}{body}, $exceeded);
+        }
+        else {
+            $payload->{alert} = $self->_trim_utf8($payload->{alert}, $exceeded);
+        }
+
+        $json = encode_utf8( $self->json_driver->encode($payload) );
+    }
+
     $h->push_write( pack('n', bytes::length($json)) ); # payload length
     $h->push_write( $json );                           # payload
+}
+
+sub _trim_utf8 {
+    my ($self, $string, $trim_length) = @_;
+
+    my $string_bytes = encode_utf8($string);
+    my $trimmed = '';
+
+    my $start_length = bytes::length($string_bytes) - $trim_length;
+    return $trimmed if $start_length <= 0;
+
+    for my $len ( reverse $start_length - 6 .. $start_length ) {
+        local $@;
+        eval {
+            $trimmed = decode_utf8(substr($string_bytes, 0, $len), Encode::FB_CROAK);
+        };
+        last if $trimmed;
+    }
+
+    return $trimmed;
 }
 
 sub connect {
     my $self = shift;
 
-    if ($self->handler) {
+    if ($self->connected) {
         warn 'Already connected!';
         return;
     }
@@ -112,6 +148,7 @@ sub connect {
             fh       => $fh,
             on_error => sub {
                 $self->on_error->(@_);
+                $self->clear_handler;
                 $_[0]->destroy;
             },
             !$self->is_debug ? (
@@ -136,6 +173,9 @@ sub connect {
 __PACKAGE__->meta->make_immutable;
 
 __END__
+
+=for stopwords
+apns SDK TODO iPhone multi-byte utf8
 
 =head1 NAME
 
@@ -178,7 +218,7 @@ This module helps you to create Apple Push Notifications Service (APNS) Provider
 =head1 NOTE FOR 0.01x USERS
 
 From 0.02, this module does not connect in constructor.
-You should call connect method explicily to connect server.
+You should call connect method explicitly to connect server.
 
 =head1 METHODS
 
@@ -232,7 +272,7 @@ Connect to apns server.
 
 =head2 $apns->send( $device_token, \%payload )
 
-Send apns messages with C<\%payload> to device speficied C<$device_token>.
+Send apns messages with C<\%payload> to device specified C<$device_token>.
 
     $apns->send( $device_token => {
         aps => {
@@ -240,7 +280,7 @@ Send apns messages with C<\%payload> to device speficied C<$device_token>.
         },
     });
 
-C<$device_token> shuould be a binary 32bytes device token provided by iPhone SDK (3.0 or above)
+C<$device_token> should be a binary 32bytes device token provided by iPhone SDK (3.0 or above)
 
 C<\%payload> should be a hashref suitable to apple document: L<http://developer.apple.com/iPhone/library/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/ApplePushService/ApplePushService.html>
 
@@ -260,7 +300,7 @@ More correct error handling
 
 =item *
 
-Auto recconection
+Auto reconnection
 
 =back
 
