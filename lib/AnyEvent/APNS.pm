@@ -9,9 +9,10 @@ use AnyEvent::TLS;
 
 require bytes;
 use Encode;
+use Scalar::Util 'looks_like_number';
 use JSON::Any;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 has certificate => (
     is       => 'rw',
@@ -84,15 +85,20 @@ sub send {
     $h->push_write( pack('n', bytes::length($token)) ); # token length
     $h->push_write( $token );                           # device token
 
+    # Apple Push Notification Service refuses string values as badge number
+    if ($payload->{aps}{badge} && looks_like_number($payload->{aps}{badge})) {
+        $payload->{aps}{badge} += 0;
+    }
+
     # The maximum size allowed for a notification payload is 256 bytes;
     # Apple Push Notification Service refuses any notification that exceeds this limit.
     if ( (my $exceeded = bytes::length($json) - 256) > 0 ) {
-        if (ref $payload->{alert} eq 'HASH') {
-            $payload->{alert}{body} =
-                $self->_trim_utf8($payload->{alert}{body}, $exceeded);
+        if (ref $payload->{aps}{alert} eq 'HASH') {
+            $payload->{aps}{alert}{body} =
+                $self->_trim_utf8($payload->{aps}{alert}{body}, $exceeded);
         }
         else {
-            $payload->{alert} = $self->_trim_utf8($payload->{alert}, $exceeded);
+            $payload->{aps}{alert} = $self->_trim_utf8($payload->{aps}{alert}, $exceeded);
         }
 
         $json = encode_utf8( $self->json_driver->encode($payload) );
